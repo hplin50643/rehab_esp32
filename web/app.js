@@ -123,6 +123,7 @@
   const fields = [];
   let latestStatus = null, revision = null, dirty = false, editVersion = 0, hasPassword = false;
   let configLoading = false, configSaving = false, statusController = null;
+  let controlsReachable = false, controlPending = false;
   const scanJobs = new Map();
   const machineSpecs = [
     ['machine.state', '機台回報狀態', stateWord, 'machineState'], ['machine.state_age_ms', '狀態回報距今', ageText], ['machine.tracking', '數值追蹤', boolState('追蹤中', '未追蹤')],
@@ -220,6 +221,8 @@
   }
   function renderStatus(status, reachable = true) {
     latestStatus = status;
+    controlsReachable = reachable;
+    updateMachineControls();
     const ble = status.ble || {}, machine = status.machine || {}, wifi = status.wifi || {}, tcp = status.tcp || {}, rfid = status.rfid || {}, ap = status.ap || {};
     const bleOnline = reachable && ble.connected && ble.ready;
     const uartOnline = reachable && machine.uart_online;
@@ -267,6 +270,35 @@
     const timer = setTimeout(() => controller.abort(), 10000);
     try { return await fetchJson(path, { ...options, signal: controller.signal }); }
     finally { clearTimeout(timer); }
+  }
+  function updateMachineControls() {
+    el('startMachine').disabled = controlPending || !controlsReachable;
+    el('stopMachine').disabled = controlPending;
+  }
+  async function sendMachineCommand(action) {
+    if (controlPending || (action === 'start' && !controlsReachable)) return;
+    const label = action === 'start' ? 'Start' : 'Stop';
+    const message = el('controlMessage');
+    controlPending = true;
+    updateMachineControls();
+    message.className = 'form-message';
+    message.textContent = `正在傳送 ${label} 指令…`;
+    try {
+      const result = await timedJson(`/api/control/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      });
+      if (result?.ok !== true) throw new Error('裝置未確認指令。');
+      message.classList.add('success');
+      message.textContent = `ESP32 已接受 ${label} 指令。`;
+    } catch (error) {
+      message.classList.add('error');
+      message.textContent = error.status
+        ? `${label} 指令被拒絕。${error.message}`
+        : `未能確認 ${label} 指令結果。${error.name === 'AbortError' ? '等待裝置回覆逾時。' : error.message}`;
+    } finally {
+      controlPending = false;
+      updateMachineControls();
+    }
   }
   function updatePasswordEditor() {
     const editing = el('changePassword').checked, open = el('modeOpen').checked;
@@ -389,6 +421,8 @@
   }, { onStop() { if (statusController) statusController.abort(); } });
 
   el('configForm').addEventListener('submit', saveConfig);
+  el('startMachine').addEventListener('click', () => void sendMachineCommand('start'));
+  el('stopMachine').addEventListener('click', () => void sendMachineCommand('stop'));
   el('configForm').addEventListener('input', markDirty);
   el('changePassword').addEventListener('change', updatePasswordEditor);
   el('modeSecured').addEventListener('change', updatePasswordEditor);
@@ -404,11 +438,12 @@
   el('wifiResults').addEventListener('change', () => { if (el('wifiResults').value) { el('wifiSsid').value = el('wifiResults').value; markDirty(); } });
   el('bleResults').addEventListener('change', () => { if (el('bleResults').value) { el('heartAddress').value = el('bleResults').value; markDirty(); } });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { poller.stop(); scanJobs.forEach(job => job.poller.stop()); text('refreshState', '頁面已暫停更新'); }
+    if (document.hidden) { controlsReachable = false; updateMachineControls(); poller.stop(); scanJobs.forEach(job => job.poller.stop()); text('refreshState', '頁面已暫停更新'); }
     else { if (latestStatus) renderStatus(latestStatus, false); poller.start(); scanJobs.forEach(job => job.poller.start()); }
   });
   root.addEventListener('pagehide', () => { poller.stop(); scanJobs.forEach(job => job.poller.stop()); });
   root.addEventListener('pageshow', () => { if (!document.hidden) poller.start(); });
+  updateMachineControls();
   void loadConfig();
   if (!document.hidden) poller.start();
 })(typeof window !== 'undefined' ? window : null);

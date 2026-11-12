@@ -6,6 +6,8 @@
 class Controller {
   struct Action { rehab::PulseKind kind; uint32_t generation; };
   SemaphoreHandle_t mutex_=nullptr;
+  bool ready_=false,webPulse_=false;
+  rehab::PulseKind webControl_=rehab::PulseKind::None;
   rehab::Parser uart_{0x55,0x90}; rehab::MachineValues values_;
   rehab::Pulse pulse_; rehab::Fifo<Action,8> actions_; rehab::Fifo<rehab::Frame,32> uartReplies_;
   rehab::Frame pulseAck_; bool pulseAckPending_=false; uint32_t pulseAckGeneration_=0;
@@ -21,6 +23,8 @@ class Controller {
   bool schedule(rehab::PulseKind kind,uint32_t gen); void abnormalStop();
   static void task(void* self) { static_cast<Controller*>(self)->run(); }
 public:
+  enum class WebControlResult { Accepted, Unavailable, Busy };
   void begin(); void appendStatus(cJSON* object,uint32_t now);
+  WebControlResult requestWebControl(rehab::PulseKind kind);
 };
 extern Controller controller;

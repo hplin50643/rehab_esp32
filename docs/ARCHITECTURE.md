@@ -8,6 +8,7 @@ flowchart LR
     Lan[同區網手機或電腦] <-->|STA HTTP| Portal
     Portal <-->|JSON 設定| Settings[NVS 設定儲存]
     Portal -->|狀態快照| Services[各服務 appendStatus]
+    Portal -->|網頁啟停| Controller[機台控制工作]
     Router[目標 Wi-Fi] --> TCP[TCP client 工作]
     TCP <-->|命令 / 回報| Controller[機台控制工作]
     Controller <-->|UART / GPIO| Machine[復健機]
@@ -22,11 +23,11 @@ flowchart LR
 | `RehabEsp32.ino` | 設定載入、服務啟動、Portal主迴圈 |
 | `portal` | AP＋STA、DNS、HTTP、Wi-Fi掃描、離線網頁與API |
 | `settings`／`settings_validation` | 設定驗證、revision衝突、NVS、保存值與生效值 |
-| `controller`／`protocol` | TCP控制命令、UART解析、GPIO時間狀態機、數值回報、套用設定的時機 |
+| `controller`／`protocol` | TCP與網頁啟停、UART解析、GPIO時間狀態機、數值回報、套用設定的時機 |
 | `tcp_service` | client socket、優先回覆／一般輸出佇列、等待回覆、重連世代 |
 | `ble_service`／`heart_rate_codec` | 有期限的NimBLE操作、候選掃描、GATT與心率解析 |
 | `ccid_service`／`ccid_codec` | USB Host、描述元、CCID收送、APDU與卡片在場去重 |
-| `web` | 手機表單、讀值與診斷展示，不提供機台控制按鈕 |
+| `web` | 手機表單、讀值與診斷展示、Start／Stop 按鈕 |
 
 ## 工作與同步
 
@@ -36,7 +37,7 @@ Portal由Arduino loop處理；機台、TCP、BLE及USB各自使用FreeRTOS工作
 
 TCP的連線generation把收送佇列與當前連線關聯，重連後丟棄舊工作。控制回覆具有優先佇列；一般事件使用另一個有界佇列，0x23每類只保留有效的最新待送值。數值在寫入socket前再次驗證，過期、被新值取代、斷線或已停止追蹤時取消，不排成運動歷史重播。USB卡片事件為有界佇列，離線時取出但不延後重放。
 
-UART回覆使用有界FIFO，驅動緩衝可容納整個封包時才寫入，避免串列輸出阻塞GPIO時間處理。阻力新目標在上一筆等待ACK時合併為最新值，回覆或逾時後才下送。Start／Stop另有8筆控制佇列，完成脈衝的回覆需成功交給TCP後才執行下一筆控制。
+UART回覆使用有界FIFO，驅動緩衝可容納整個封包時才寫入，避免串列輸出阻塞GPIO時間處理。阻力新目標在上一筆等待ACK時合併為最新值，回覆或逾時後才下送。TCP Start／Stop 有8筆控制佇列，完成脈衝的回覆交給TCP後才執行下一筆TCP控制。網頁指令與TCP共用GPIO狀態機，網頁Stop會取代尚未執行的網頁Start，等目前脈衝完成後優先執行。
 
 ## 設定狀態
 
@@ -62,7 +63,7 @@ Wi-Fi掃描非同步進行，掃描啟動後最長15秒、最多保存32個SSID�
 
 頁面原始碼位於 `web/`；建置時生成 `web_assets.h`，直接編入韌體，無外部字型、CDN或檔案系統。用 `textContent`呈現SSID、BLE名稱、錯誤與封包，避免把裝置廣播字串當成HTML。
 
-HTTP監聽AP與STA，確認localIP為設定AP或目前已連線的STA IP；Host必須是實際接入介面IP（可附 `:80`），POST保留Origin檢查。Host不符的AP GET探測導向AP IP，STA請求拒絕，以限制DNS rebinding。兩個正常IP入口提供相同的頁面與API。DNS仍只綁定AP；AP未知非API路徑導向首頁，STA未知路徑回覆404。HTTP狀態使用no-store，網頁資源使用no-cache及只允許同源的Content Security Policy。這些限制不提供身分驗證：可連入AP或同區網STA入口的人都能設定與查看。
+HTTP監聽AP與STA，確認localIP為設定AP或目前已連線的STA IP；Host必須是實際接入介面IP（可附 `:80`），POST保留Origin檢查。Host不符的AP GET探測導向AP IP，STA請求拒絕，以限制DNS rebinding。兩個正常IP入口提供相同的頁面與API。DNS仍只綁定AP；AP未知非API路徑導向首頁，STA未知路徑回覆404。HTTP狀態使用no-store，網頁資源使用no-cache及只允許同源的Content Security Policy。可連入AP或同區網STA入口的人都能查看、設定及送出啟停指令，無需登入。
 
 前端狀態輪詢與設定表單分開。修改密碼必須明確勾選；409保留使用者輸入。輪詢採單一未完成請求，背景頁停止，不將輪詢結果回寫成表單預設值。
 

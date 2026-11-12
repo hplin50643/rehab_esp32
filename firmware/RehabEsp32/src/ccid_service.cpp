@@ -425,6 +425,11 @@ struct CcidService::Impl {
     usb_host_config_t config{};
     config.skip_phy_setup = false;
     config.intr_flags = ESP_INTR_FLAG_LEVEL1;
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+    // This SDK cancels enumeration if the enabled filter has no callback.
+    // Keep the default configuration so scanDevices can identify the reader.
+    config.enum_filter_cb = [](const usb_device_desc_t*, uint8_t*) { return true; };
+#endif
     const esp_err_t result = usb_host_install(&config);
     if (result != ESP_OK) {
       self->error(usbError("Install USB Host", result), true);

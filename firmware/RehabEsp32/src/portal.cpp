@@ -57,20 +57,39 @@ void reply(cJSON* value,int code=200) {
   cJSON_Delete(value);
 }
 void error(int code,const String& message) {auto o=cJSON_CreateObject(); jb(o,"ok",false); js(o,"error",message); reply(o,code);}
+bool hasJsonContentType() {
+  String contentType=web.header("Content-Type"); int separator=contentType.indexOf(';');
+  if(separator>=0) contentType=contentType.substring(0,separator);
+  contentType.trim(); contentType.toLowerCase();
+  return contentType=="application/json";
+}
 void configGet() {if(!allowed()) return; auto o=cJSON_CreateObject(); settingsStore.append(o); reply(o);}
 void configPost() {
   if(!allowed()) return;
   String body=web.arg("plain");
-  String contentType=web.header("Content-Type"); int separator=contentType.indexOf(';');
-  if(separator>=0) contentType=contentType.substring(0,separator);
-  contentType.trim(); contentType.toLowerCase();
-  if(contentType!="application/json" || !rehab::boundedSettingsJson(body.c_str(),body.length())) {error(400,"請使用有效的 JSON 設定"); return;}
+  if(!hasJsonContentType() || !rehab::boundedSettingsJson(body.c_str(),body.length())) {error(400,"請使用有效的 JSON 設定"); return;}
   const char* end=nullptr; cJSON* request=cJSON_ParseWithOpts(body.c_str(),&end,true);
   if(!request) {error(400,"JSON 格式錯誤"); return;}
   String message; int code=settingsStore.save(request,message); cJSON_Delete(request);
   if(code!=200) {error(code,message); return;}
   auto o=cJSON_CreateObject(); jb(o,"ok",true); settingsStore.append(o); reply(o);
   settingsStore.allowApply();
+}
+void controlPost(rehab::PulseKind kind) {
+  if(!allowed()) return;
+  if(!hasJsonContentType()) {error(415,"請使用 application/json 傳送指令"); return;}
+  const String body=web.arg("plain");
+  cJSON* request=body.length()<=32?cJSON_ParseWithOpts(body.c_str(),nullptr,true):nullptr;
+  const bool valid=cJSON_IsObject(request) && !request->child;
+  cJSON_Delete(request);
+  if(!valid) {error(400,"指令內容必須是空的 JSON 物件"); return;}
+  switch(controller.requestWebControl(kind)) {
+    case Controller::WebControlResult::Unavailable: error(503,"機台控制尚未就緒"); return;
+    case Controller::WebControlResult::Busy: error(409,"正在處理啟停指令，請稍後再試"); return;
+    case Controller::WebControlResult::Accepted: {
+      auto o=cJSON_CreateObject(); jb(o,"ok",true); reply(o,202); return;
+    }
+  }
 }
 void statusGet() {
   if(!allowed()) return; uint32_t now=millis(); auto o=cJSON_CreateObject();
@@ -229,6 +248,8 @@ void portalBegin() {
   web.on("/style.css",HTTP_GET,[]{asset("text/css; charset=utf-8",web_style_css,web_style_css_len);});
   web.on("/app.js",HTTP_GET,[]{asset("application/javascript; charset=utf-8",web_app_js,web_app_js_len);});
   web.on("/api/status",HTTP_GET,statusGet); web.on("/api/config",HTTP_GET,configGet); web.on("/api/config",HTTP_POST,configPost);
+  web.on("/api/control/start",HTTP_POST,[]{controlPost(rehab::PulseKind::Start);});
+  web.on("/api/control/stop",HTTP_POST,[]{controlPost(rehab::PulseKind::Stop);});
   web.on("/api/scan/wifi",HTTP_GET,wifiScanGet);
   web.on("/api/scan/wifi",HTTP_POST,[]{if(!allowed()) return; if(!scanRequested&&!scanRunning) {scanRequested=true; scanPreparing=false; scanQueuedAt=millis(); scanState="queued"; scanError="";} wifiScanGet();});
   web.on("/api/scan/ble",HTTP_GET,bleScanGet);

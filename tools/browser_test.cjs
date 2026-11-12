@@ -8,10 +8,19 @@ const root = path.resolve(__dirname, '..');
 const status = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/status.json')));
 const settings = {wifi_ssid:'Rehab-Demo',has_password:true,socket_server:'192.0.2.10',heart_rate_address:'AA:BB:CC:DD:EE:01'};
 let revision=1, conflict=false, posts=[];
+const controlPosts = [];
+let releaseStart, rejectStop = false, statusAvailable = true;
+const waitForStart = new Promise(resolve => { releaseStart = resolve; });
 const server = http.createServer(async (req,res)=>{
   const body=[]; for await (const part of req) body.push(part);
   const json = (value,code=200)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
-  if(req.url==='/api/status') return json(status);
+  if(req.url==='/api/status') return statusAvailable ? json(status) : json({error:'連線中斷'}, 503);
+  if (req.url === '/api/control/start' || req.url === '/api/control/stop') {
+    controlPosts.push({ path: req.url, method: req.method, type: req.headers['content-type'], body: Buffer.concat(body).toString() });
+    if (req.url === '/api/control/start') await waitForStart;
+    else if (rejectStop) return json({ error: '停止指令測試錯誤' }, 409);
+    return json({ ok: true }, 202);
+  }
   if(req.url==='/api/config') {
     if(req.method==='GET') return json({revision,pending:false,settings,active:settings});
     const payload=JSON.parse(Buffer.concat(body)); posts.push(payload);
@@ -45,6 +54,24 @@ const server = http.createServer(async (req,res)=>{
     await page.setViewportSize({width:390,height:844});
     await page.evaluate(()=>window.scrollTo(0,0));
     await page.screenshot({path:path.join(root,'docs/images/dashboard-mobile.png'),fullPage:true});
+    const startMachine = page.getByRole('button', { name: 'Start 啟動' });
+    const stopMachine = page.getByRole('button', { name: 'Stop 停止' });
+    await startMachine.click();
+    assert.equal(await startMachine.isDisabled(), true);
+    assert.equal(await stopMachine.isDisabled(), true);
+    releaseStart();
+    await page.waitForFunction(() => document.getElementById('controlMessage').textContent === 'ESP32 已接受 Start 指令。');
+    statusAvailable = false;
+    await page.waitForFunction(() => document.getElementById('startMachine').disabled);
+    await stopMachine.click();
+    await page.waitForFunction(() => document.getElementById('controlMessage').textContent === 'ESP32 已接受 Stop 指令。');
+    assert.deepEqual(controlPosts, ['start', 'stop'].map(action => ({
+      path: `/api/control/${action}`, method: 'POST', type: 'application/json', body: '{}'
+    })));
+    rejectStop = true;
+    await stopMachine.click();
+    await page.waitForFunction(() => document.getElementById('controlMessage').textContent.includes('停止指令測試錯誤'));
+    statusAvailable = true;
     await page.locator('#wifiSsid').fill('Edited-Demo');
     await page.waitForTimeout(1200);
     assert.equal(await page.locator('#wifiSsid').inputValue(),'Edited-Demo');
@@ -76,6 +103,6 @@ const server = http.createServer(async (req,res)=>{
     await page.setViewportSize({width:1440,height:1000});
     await page.evaluate(()=>window.scrollTo(0,0));
     await page.screenshot({path:path.join(root,'docs/images/diagnostics-desktop.png'),fullPage:true});
-    assert.deepEqual(errors,[]); console.log('Browser QA passed: responsive layouts, rendering, AP/LAN entries, IP changes, preserved edits, save, conflict, scans, XSS and stale data.');
+    assert.deepEqual(errors,[]); console.log('Browser QA passed: Start/Stop requests, responsive layouts, rendering, AP/LAN entries, IP changes, preserved edits, save, conflict, scans, XSS and stale data.');
   } finally {await browser.close();server.close();}
 })().catch(error=>{console.error(error);server.close();process.exitCode=1;});

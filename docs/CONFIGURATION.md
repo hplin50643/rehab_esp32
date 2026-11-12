@@ -64,10 +64,14 @@ BLE連線使用掃描得到的public／random位址類型，手填MAC也會先�
 | GET | `/api/status` | 目前裝置狀態及最後封包快照 |
 | GET | `/api/config` | 設定版本、保存值、生效值及保存狀態 |
 | POST | `/api/config` | 驗證版本並保存設定 |
+| POST | `/api/control/start` | 送出機台啟動指令 |
+| POST | `/api/control/stop` | 送出機台停止指令 |
 | POST | `/api/scan/wifi` | 排入Wi-Fi掃描 |
 | GET | `/api/scan/wifi` | 查詢Wi-Fi掃描進度與結果 |
 | POST | `/api/scan/ble` | 排入BLE掃描 |
 | GET | `/api/scan/ble` | 查詢BLE掃描進度與結果 |
+
+啟停指令使用 `Content-Type: application/json`，請求內容為 `{}`。`202` 與 `{"ok":true}` 表示 ESP32 接受指令，實際機台狀態由 `/api/status` 的 `machine.state` 回報。若機台控制忙碌，Start 回傳 `409`。
 
 GET設定範例（人工資料）：
 

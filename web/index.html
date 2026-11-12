@@ -29,6 +29,13 @@
     </section>
     <section class="panel overview" aria-labelledby="overviewTitle">
       <div class="panel-heading"><h2 id="overviewTitle">連線概況</h2><span id="machineState" class="badge neutral">機台狀態 —</span></div>
+      <div class="machine-controls" role="group" aria-label="機台控制">
+        <div class="machine-control-buttons">
+          <button id="startMachine" class="button primary" type="button" disabled>Start 啟動</button>
+          <button id="stopMachine" class="button stop-button" type="button" disabled>Stop 停止</button>
+        </div>
+        <p id="controlMessage" class="form-message" role="status"></p>
+      </div>
       <div class="connection-grid">
         <div><span class="connection-label">目標 Wi-Fi</span><strong id="wifiSummary">—</strong><span id="wifiDetail" class="muted small">等待裝置資料</span></div>
         <div><span class="connection-label">TCP 伺服器</span><strong id="tcpSummary">—</strong><span id="tcpDetail" class="muted small">等待裝置資料</span></div>
@@ -102,6 +109,6 @@
     </section>
     <footer class="page-footer"><p><span class="footer-dot" aria-hidden="true"></span><span id="apFootnote">設定熱點保持開啟</span></p><p>設定熱點入口 <a href="http://192.168.4.1/">192.168.4.1</a><span class="footer-divider">·</span><span id="firmwareVersion">ESP32-S3</span></p></footer>
   </main>
-  <noscript><p class="notice error shell">此頁需要啟用 JavaScript 才能讀取裝置狀態及儲存設定。</p></noscript>
+  <noscript><p class="notice error shell">此頁需要啟用 JavaScript 才能操作機台、讀取裝置狀態及儲存設定。</p></noscript>
 </body>
 </html>

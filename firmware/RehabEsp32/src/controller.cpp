@@ -19,11 +19,27 @@ void Controller::begin() {
   digitalWrite(board::startPin,LOW); digitalWrite(board::stopPin,LOW);
   machineSerial.setRxBufferSize(2048); machineSerial.begin(board::machineBaud,SERIAL_8N1,board::machineRx,board::machineTx);
   missingTick_=millis();
-  if(xTaskCreate(task,"machine",6144,this,3,nullptr)!=pdPASS) error_="無法啟動機台執行緒";
+  ready_=xTaskCreate(task,"machine",6144,this,3,nullptr)==pdPASS;
+  if(!ready_) error_="無法啟動機台執行緒";
 }
 bool Controller::schedule(rehab::PulseKind kind,uint32_t gen) {
   if(!actions_.push({kind,gen})) {error_="控制佇列已滿"; return false;}
   return true;
+}
+Controller::WebControlResult Controller::requestWebControl(rehab::PulseKind kind) {
+  if(!ready_) return WebControlResult::Unavailable;
+  xSemaphoreTake(mutex_,portMAX_DELAY);
+  auto result=WebControlResult::Accepted;
+  if(kind==rehab::PulseKind::Stop) {
+    // Replace a pending web Start and reuse a Stop pulse already in progress.
+    webControl_=pulse_.kind==rehab::PulseKind::Stop?rehab::PulseKind::None:kind;
+  } else if(pulse_.kind!=rehab::PulseKind::None || webControl_!=rehab::PulseKind::None || actions_.size()) {
+    result=WebControlResult::Busy;
+  } else {
+    webControl_=kind;
+  }
+  xSemaphoreGive(mutex_);
+  return result;
 }
 bool Controller::uartSend(const rehab::Frame& f) {
   if(uartReplies_.push(f)) return true;
@@ -114,14 +130,25 @@ void Controller::tick(uint32_t now) {
   if(rehab::due(now,missingTick_,1000)) {
     missingTick_=now;
     if(!hadAnyByte_ || rehab::due(now,lastByte_,1000)) {
-      if(tracking_ && emptyReads_>30) { actions_.clear(); levelQueued_=false; schedule(rehab::PulseKind::Stop,0); emptyReads_=0; ++timeouts_; error_="機台 UART 長時間未回應，停止追蹤"; }
+      if(tracking_ && emptyReads_>30) {
+        actions_.clear(); levelQueued_=false;
+        if(webControl_!=rehab::PulseKind::Stop && !(webPulse_ && pulse_.kind==rehab::PulseKind::Stop)) {
+          webControl_=rehab::PulseKind::None;
+          schedule(rehab::PulseKind::Stop,0);
+        }
+        emptyReads_=0; ++timeouts_; error_="機台 UART 長時間未回應，停止追蹤";
+      }
       ++emptyReads_;
     }
   }
   if(levelPending_ && rehab::due(now,levelAt_,3000)) {levelPending_=false; ++timeouts_; error_="阻力指令 UART ACK 逾時";}
   flushUart(now);
-  if(pulse_.kind==rehab::PulseKind::None && !pulseAckPending_ && actions_.size()) {
-    Action next{}; actions_.pop(next); pulse_.start(next.kind,now,next.generation);
+  if(pulse_.kind==rehab::PulseKind::None && webControl_!=rehab::PulseKind::None) {
+    pulse_.start(webControl_,now,0);
+    webControl_=rehab::PulseKind::None; webPulse_=true;
+  } else if(pulse_.kind==rehab::PulseKind::None && !pulseAckPending_ && actions_.size()) {
+    Action next{}; actions_.pop(next); webPulse_=false;
+    pulse_.start(next.kind,now,next.generation);
   }
   if(pulse_.kind!=rehab::PulseKind::None) {
     bool completed=pulse_.tick(now);
@@ -135,7 +162,7 @@ void Controller::tick(uint32_t now) {
         // period. Reset its one-second clock when the START pulse completes.
         emptyReads_=0; missingTick_=now;
       }
-      else if(!pulse_.generation) {machineState_=3; abnormalStop();}
+      else if(!pulse_.generation && !webPulse_) {machineState_=3; abnormalStop();}
       if(pulse_.generation) {
         const uint8_t data[]={uint8_t(starting?1:0),0xc8};
         pulseAck_=rehab::makeFrame(0x22,data,2); pulseAckGeneration_=pulse_.generation; pulseAckPending_=true;
@@ -174,7 +201,7 @@ void Controller::tick(uint32_t now) {
     telemetry(2,heart.bpm,seenBpm_,freshHeart,heart.receivedMs,10000);
   }
   if(settingsStore.pending() && rehab::canApplyConfig(tracking_,pulse_.kind,actions_.size()) &&
-      !pulseAckPending_&&!levelQueued_&&!levelPending_&&!uartReplies_.size()&&tcpService.idle()) {
+      webControl_==rehab::PulseKind::None&&!pulseAckPending_&&!levelQueued_&&!levelPending_&&!uartReplies_.size()&&tcpService.idle()) {
     Settings before,after;
     if(settingsStore.apply(before,after)) {
       if(strcmp(before.heartAddress,after.heartAddress)) {bleService.configure(after.heartAddress); seenBpm_=-1;}
@@ -201,7 +228,7 @@ void Controller::appendStatus(cJSON* o,uint32_t now) {
   jnullable(o,"age28_ms",now-values_.at28,values_.has28); jnullable(o,"age3f_ms",now-values_.at3f,values_.has3f);
   jnullable(o,"target_level",targetLevel_,targetLevel_>=0); jnullable(o,"sent_level",sentLevel_,sentLevel_>=0);
   jb(o,"level_ack_pending",levelPending_); js(o,"last_error",error_);
-  jb(o,"level_queued",levelQueued_); jn(o,"queued_controls",actions_.size());
+  jb(o,"level_queued",levelQueued_); jn(o,"queued_controls",actions_.size()+(webControl_!=rehab::PulseKind::None));
   jb(o,"control_ack_queued",pulseAckPending_); jn(o,"queued_uart_replies",uartReplies_.size());
   js(o,"pulse",pulse_.kind==rehab::PulseKind::None?"idle":pulse_.kind==rehab::PulseKind::Start?"start":pulse_.high?"stop":"stop_settling");
   js(o,"rx_hex",rxHex_); js(o,"tx_hex",txHex_); jn(o,"checksum_errors",uart_.checksumErrors);
